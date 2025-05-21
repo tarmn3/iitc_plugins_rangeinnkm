@@ -2,7 +2,7 @@
 // @id            iitc-plugin-nearby-portals@tarmn3
 // @name          IITC Plugin: Nearby Portals
 // @category      Info
-// @version       0.1.0
+// @version       0.2.0
 // @namespace     https://github.com/tarmn3/iitc_plugins_rangeinnkm
 // @description   List portals within a specified radius of the selected portal (map popup & sidebar)
 // @include       https://*.ingress.com/intel*
@@ -12,121 +12,122 @@
 // @grant         none
 // ==/UserScript==
 (function() {
-  function wrapper(plugin_info) {
+  function wrapper() {
     if (typeof window.plugin !== 'object') window.plugin = {};
-    var p = window.plugin.nearbyPortals = {};
-    p.defaultRadiusKm = 1.0; // default radius in km
+    var p = window.plugin.nearbyPortals = { defaultRadiusKm: 1.0 };
 
-    // Add [Nearby] button
+    // Consolidated CSS for dialog content and button styles
+    var STYLE = `
+        /* ダイアログ本体の幅を中身に合わせる */
+        .nearby-dialog.ui-dialog {
+          width: auto !important;          /* 自動幅 */
+          display: inline-block !important;/* インラインブロック化してテキスト幅にフィット */
+          max-width: 90vw !important;      /* ビューポート比で上限を設けたいなら */
+        }
+
+        /* タイトルバー部分を含めた全体の余白を微調整（必要なら） */
+        .nearby-dialog .ui-dialog-titlebar {
+          padding: 0.4em 0.6em !important;  /* お好みで調整 */
+        }
+
+        /* リスト部分は折り返しせず、1行で長いテキストも確認したい場合 */
+        .nearby-dialog .ui-dialog-content {
+          white-space: nowrap !important;  /* 折り返さない */
+        }
+
+      .nearby-list-btn {
+        margin-left: 4px !important;
+        font-size: 0.9em !important;
+        cursor: pointer !important;
+        color: #ff0 !important;
+      }
+    `;
+
+    /** Inject consolidated CSS into page **/
+    function injectStyles() {
+      $('<style>').prop('type', 'text/css').html(STYLE).appendTo('head');
+    }
+
+    /** Add [Nearby] link to portal detail headers **/
     function addButton() {
       $('.portaldetails .title, #portaldetails .title').each(function() {
-        var $title = $(this);
-        if ($title.find('.nearby-list-btn').length) return;
-        var $btn = $('<a class="nearby-list-btn" href="#" style="margin-left:4px;font-size:0.9em;">[Nearby]</a>');
-        $btn.on('click', function(ev) {
-          ev.preventDefault();
-          p.promptAndShow();
-        });
-        $title.append($btn);
+        var $el = $(this);
+        if ($el.find('.nearby-list-btn').length) return;
+        $('<a>', { class: 'nearby-list-btn', text: '[Nearby]' })
+          .on('click', function(e) { e.preventDefault(); p.promptAndShow(); })
+          .appendTo($el);
       });
     }
 
-    // Prompt user for radius and show list
+    /** Prompt for radius and trigger nearby search **/
     p.promptAndShow = function() {
       var km = prompt('半径をkm単位で指定してください (例: 1 = 1km)', p.defaultRadiusKm);
-      if (km === null) return; // cancelled
+      if (km === null) return;
       km = parseFloat(km);
-      if (isNaN(km) || km <= 0) {
-        alert('有効な数値を入力してください');
-        return;
-      }
+      if (isNaN(km) || km <= 0) { alert('有効な数値を入力してください'); return; }
       p.defaultRadiusKm = km;
       p.showNearby(km * 1000);
     };
 
-    // Show nearby portals within given radius in meters
+    /** Compute nearby portals and render list **/
     p.showNearby = function(radius) {
-      var centerGuid = window.selectedPortal;
-      if (!centerGuid) { alert('ポータルが選択されていません'); return; }
-      var details = window.portalDetail.get(centerGuid);
-      var centerData = details && window.getPortalSummaryData
-        ? window.getPortalSummaryData(details)
-        : (window.portals[centerGuid] && window.portals[centerGuid].options.data);
-      if (!centerData) { alert('ポータルデータが取得できません'); return; }
-      var centerLatLng = L.latLng(centerData.latE6/1e6, centerData.lngE6/1e6);
+      var guid = window.selectedPortal ||
+        (window.portaldetails && window.portaldetails.portalDetails && window.portaldetails.portalDetails.guid);
+      if (!guid) { alert('ポータルが選択されていません'); return; }
 
-      // Collect nearby
-      var nearby = [];
-      $.each(window.portals, function(guid, portal) {
-        var latlng = portal.getLatLng();
-        var dist = centerLatLng.distanceTo(latlng);
-        if (dist <= radius) nearby.push({ guid: guid, dist: dist });
-      });
-      if (!nearby.length) {
-        alert('半径' + (radius/1000) + 'km以内のポータルは見つかりませんでした');
-        return;
-      }
+      var portal = window.portals[guid];
+      if (!portal || !portal.options || !portal.options.data) { alert('ポータルデータが取得できません'); return; }
+      var centerLL = L.latLng(portal.options.data.latE6 / 1e6, portal.options.data.lngE6 / 1e6);
 
-      // Prepare items, load missing details
-      var items = [], toLoad = {}, remaining = 0;
-      nearby.forEach(function(item) {
-        var d = window.portalDetail.get(item.guid);
-        if (d && window.getPortalSummaryData) {
-          var s = window.getPortalSummaryData(d);
-          items.push({ name: s.title, guid: item.guid, dist: item.dist });
-        } else {
-          toLoad[item.guid] = item.dist;
-          remaining++;
-          window.portalDetail.request(item.guid);
+      var items = [];
+      $.each(window.portals, function(g, ptl) {
+        var dist = centerLL.distanceTo(ptl.getLatLng());
+        if (dist <= radius) {
+          items.push({ title: ptl.options.data.title, guid: g, dist: dist });
         }
       });
-      if (remaining === 0) {
-        display(items, radius);
-      } else {
-        var hook = function(data) {
-          if (data.success && data.details && data.guid in toLoad) {
-            var s = window.getPortalSummaryData(data.details);
-            items.push({ name: s.title, guid: data.guid, dist: toLoad[data.guid] });
-            delete toLoad[data.guid];
-            remaining--;
-            if (remaining <= 0) {
-              window.removeHook('portalDetailLoaded', hook);
-              display(items, radius);
-            }
-          }
-        };
-        window.addHook('portalDetailLoaded', hook);
-      }
+      if (!items.length) { alert('半径 ' + (radius / 1000) + 'km以内にポータルがありません'); return; }
+      render(items, radius);
     };
 
-    // Render dialog
-    function display(items, radius) {
+    /** Render the portal list in a modal dialog **/
+    function render(items, radius) {
       items.sort(function(a, b) { return a.dist - b.dist; });
-      var km = (radius/1000).toFixed(2);
-      var html = '<div style="max-height:300px;overflow:auto;width:100%;"><ul>';
-      items.forEach(function(item) {
-        var url = location.origin + '/intel?oguid=' + item.guid;
-        html += '<li>' + item.name + ' (<a href="' + url + '" target="_blank">' + url + '</a>) - ' + Math.round(item.dist) + 'm</li>';
+      var km = (radius / 1000).toFixed(2);
+      var html = '<ul style="margin:0; padding:0; list-style:disc outside;">';
+      items.forEach(function(i) {
+        var url = location.origin + '/intel?oguid=' + i.guid;
+        html += '<li style="margin:4px 0; padding:0 10px;">'
+              + i.title + ' (<a href="' + url + '" target="_blank">Link</a>) - '
+              + Math.round(i.dist) + 'm</li>';
       });
-      html += '</ul></div>';
+      html += '</ul>';
+
       window.dialog({
+        dialogClass: 'nearby-dialog',
+        modal: true,
         title: '半径 ' + km + ' km 内のポータル',
         html: html,
-        width: 600
+        width: '80vw'
       });
     }
 
+    /** Initialize plugin and register hooks **/
     function setup() {
+      injectStyles();
+      addButton();
       window.addHook('portalSelected', addButton);
       window.addHook('portalDetailsUpdated', addButton);
+      window.addHook('mapDataRefreshEnd', addButton);
+      window.addHook('boot', addButton);
     }
-    setup.info = plugin_info;
+
+    setup.info = { script: { version: '0.6.1' } };
     window.addHook('iitcLoaded', setup);
   }
 
+  // Inject the plugin into page context
   var script = document.createElement('script');
-  var info = {};
-  if (typeof GM_info !== 'undefined' && GM_info.script) info.script = { version: GM_info.script.version, name: GM_info.script.name };
-  script.appendChild(document.createTextNode('(' + wrapper + ')(' + JSON.stringify(info) + ');'));
+  script.appendChild(document.createTextNode('(' + wrapper + ')()'));
   document.body.appendChild(script);
 })();
