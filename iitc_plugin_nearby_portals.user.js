@@ -13,7 +13,7 @@
 // ==/UserScript==
 (function() {
   function wrapper() {
-    if (typeof window.plugin !== 'object') window.plugin = {};
+    if(typeof window.plugin !== 'function') window.plugin = function() {};
     var p = window.plugin.nearbyPortals = { defaultRadiusKm: 1.0 };
 
     // Consolidated CSS for dialog content and button styles
